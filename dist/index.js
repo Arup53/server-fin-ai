@@ -1,4 +1,6 @@
 import express from "express";
+import { createServer } from "http";
+import { WebSocketServer } from "ws";
 import cors from "cors";
 import dotenv from "dotenv";
 dotenv.config();
@@ -10,6 +12,8 @@ import { z } from "zod";
 import RSI from "calc-rsi";
 import axios from "axios";
 const app = express();
+const server = createServer(app);
+const wss = new WebSocketServer({ server });
 app.use(express.json());
 app.use(cors());
 const port = 3000;
@@ -129,13 +133,15 @@ app.post("/user", async (req, res) => {
     const prompt = ChatPromptTemplate.fromMessages([
         [
             "system",
-            `You are a crypto market advisor. Follow these steps:
+            `You are a crypto market advisor. Follow these steps if user query on crypto market:
       1. Identify which cryptocurrency(ies) the user is asking about
       2. Use appropriate tools to gather data for those specific coins
       3. Always mention the tools you used and their results (sentimenttool will provide overall market sentiment not specific coin sentiment note that)
       4. Provide clear advice based on the collected data and do not say do your own research
       
-      Example coin IDs: bitcoin, ethereum, solana, dogecoin`,
+      Example coin IDs: bitcoin, ethereum, solana, dogecoin
+      else answer that : Sorry, I can not answer general query as I am a crypto market advisor
+      `,
         ],
         ["human", "{input}"],
         ["placeholder", "{agent_scratchpad}"],
@@ -162,6 +168,48 @@ app.post("/user", async (req, res) => {
     console.log(result);
     res.send({ result });
 });
-app.listen(port, () => {
-    console.log(`Server is running on http://localhost:${port}`);
+// WebSocket Connection
+const symbols = [
+    "btcusdt",
+    "ethusdt",
+    "bnbusdt",
+    "solusdt",
+    "xrpusdt",
+    "dogeusdt",
+    "dotusdt",
+]; // Add up to 20 symbols
+const url = `wss://stream.binance.com:9443/ws/${symbols
+    .map((s) => `${s}@trade`)
+    .join("/")}`;
+let binanceSocket = new WebSocket(url);
+// Broadcast function
+const broadcast = (data) => {
+    wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(data));
+        }
+    });
+};
+// Handle Binance WebSocket events
+binanceSocket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    const priceUpdate = {
+        symbol: data.s,
+        price: parseFloat(data.p),
+    };
+    broadcast(priceUpdate);
+};
+binanceSocket.onclose = () => {
+    console.log("Binance WebSocket closed. Reconnecting...");
+    setTimeout(() => {
+        binanceSocket = new WebSocket(url);
+    }, 5000);
+};
+wss.on("connection", (ws) => {
+    console.log("Client connected");
+    ws.send(JSON.stringify({ message: "Connected to Binance Ticker!" }));
+});
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
 });
