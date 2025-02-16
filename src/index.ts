@@ -21,6 +21,15 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { z } from "zod";
 import RSI from "calc-rsi";
 import axios from "axios";
+import "cheerio";
+import { CheerioWebBaseLoader } from "@langchain/community/document_loaders/web/cheerio";
+import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
+import { PineconeStore } from "@langchain/pinecone";
+import { Pinecone as PineconeClient } from "@pinecone-database/pinecone";
+import { PromptTemplate } from "@langchain/core/prompts";
+import { StringOutputParser } from "@langchain/core/output_parsers";
+import { createStuffDocumentsChain } from "langchain/chains/combine_documents";
+import { MistralAIEmbeddings } from "@langchain/mistralai";
 
 const app = express();
 const server = createServer(app);
@@ -34,6 +43,11 @@ const llm = new ChatGroq({
   apiKey: process.env.GROQ_API_KEY,
   model: "llama-3.3-70b-versatile",
   temperature: 0,
+});
+
+const embeddings = new MistralAIEmbeddings({
+  model: "mistral-embed",
+  apiKey: process.env.MISTRAL_API_KEY,
 });
 
 app.get("/", (req, res) => {
@@ -211,54 +225,125 @@ app.post("/user", async (req, res) => {
   res.send({ result });
 });
 
-// WebSocket Connection
-const symbols = [
-  "btcusdt",
-  "ethusdt",
-  "bnbusdt",
-  "solusdt",
-  "xrpusdt",
-  "dogeusdt",
-  "dotusdt",
-]; // Add up to 20 symbols
-const url = `wss://stream.binance.com:9443/ws/${symbols
-  .map((s) => `${s}@trade`)
-  .join("/")}`;
-
-let binanceSocket = new WebSocket(url);
-
-// Broadcast function
-const broadcast = (data: any) => {
-  wss.clients.forEach((client: any) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(data));
+app.post("/chatRag", async (req, res) => {
+  const pTagSelector = "p";
+  const cheerioLoader = new CheerioWebBaseLoader(
+    "https://lilianweng.github.io/posts/2023-06-23-agent/",
+    {
+      selector: pTagSelector,
     }
+  );
+
+  const docs = await cheerioLoader.load();
+
+  const splitter = new RecursiveCharacterTextSplitter({
+    chunkSize: 1000,
+    chunkOverlap: 200,
   });
-};
+  const allSplits = await splitter.splitDocuments(docs);
+  console.log(allSplits.length);
 
-// Handle Binance WebSocket events
-binanceSocket.onmessage = (event) => {
-  const data = JSON.parse(event.data);
+  const pinecone = new PineconeClient();
+  const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX!);
 
-  const priceUpdate = {
-    symbol: data.s,
-    price: parseFloat(data.p),
-  };
+  const vectorStore = await PineconeStore.fromExistingIndex(embeddings, {
+    pineconeIndex,
+    // Maximum number of batch requests to allow at once. Each batch is 1000 vectors.
+    maxConcurrency: 5,
+    // You can pass a namespace here too
+    // namespace: "foo",
+  });
 
-  broadcast(priceUpdate);
-};
+  await vectorStore.addDocuments(allSplits);
 
-binanceSocket.onclose = () => {
-  console.log("Binance WebSocket closed. Reconnecting...");
-  setTimeout(() => {
-    binanceSocket = new WebSocket(url);
-  }, 5000);
-};
+  const retriever = vectorStore.asRetriever({
+    k: 5, // number of results
+  });
 
-wss.on("connection", (ws: any) => {
-  console.log("Client connected");
-  ws.send(JSON.stringify({ message: "Connected to Binance Ticker!" }));
+  // const res = await retriever.invoke("What is Task Decomposition?");
+  // console.log(res);
+
+  const customTemplate = `Use the following pieces of context to answer the question at the end.
+If you don't know the answer, just say that you don't know, don't try to make up an answer.
+Use three sentences maximum and keep the answer as concise as possible.
+Always say "thanks for asking!" at the end of the answer.
+
+{context}
+
+Question: {question}
+
+Answer:`;
+
+  const customRagPrompt = PromptTemplate.fromTemplate(customTemplate);
+
+  const customRagChain = await createStuffDocumentsChain({
+    llm: llm,
+    prompt: customRagPrompt,
+    outputParser: new StringOutputParser(), // output result as string
+  });
+
+  const userQuery = "What is Task Decomposition?";
+
+  const context = await retriever.invoke(userQuery);
+
+  const result = await customRagChain.invoke({
+    question: userQuery,
+    context,
+  });
+
+  console.log(result);
+
+  res.send(result);
 });
+
+// WebSocket Connection
+// const symbols = [
+//   "btcusdt",
+//   "ethusdt",
+//   "bnbusdt",
+//   "solusdt",
+//   "xrpusdt",
+//   "dogeusdt",
+//   "dotusdt",
+// ]; // Add up to 20 symbols
+// const url = `wss://stream.binance.com:9443/ws/${symbols
+//   .map((s) => `${s}@trade`)
+//   .join("/")}`;
+
+// let binanceSocket = new WebSocket(url);
+
+// // Broadcast function
+// const broadcast = (data: any) => {
+//   wss.clients.forEach((client: any) => {
+//     if (client.readyState === WebSocket.OPEN) {
+//       client.send(JSON.stringify(data));
+//     }
+//   });
+// };
+
+// // Handle Binance WebSocket events
+// binanceSocket.onmessage = (event) => {
+//   const data = JSON.parse(event.data);
+
+//   const priceUpdate = {
+//     symbol: data.s,
+//     price: parseFloat(data.p),
+//   };
+
+//   broadcast(priceUpdate);
+// };
+
+// binanceSocket.onclose = () => {
+//   console.log("Binance WebSocket closed. Reconnecting...");
+//   setTimeout(() => {
+//     binanceSocket = new WebSocket(url);
+//   }, 5000);
+// };
+
+// wss.on("connection", (ws: any) => {
+//   console.log("Client connected");
+//   ws.send(JSON.stringify({ message: "Connected to Binance Ticker!" }));
+// });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
