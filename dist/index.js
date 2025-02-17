@@ -182,6 +182,8 @@ app.post("/user", async (req, res) => {
     res.send({ result });
 });
 app.post("/chatRag", async (req, res) => {
+    const query = req.body.query;
+    console.log(query);
     const pTagSelector = "p";
     const cheerioLoader = new CheerioWebBaseLoader("https://lilianweng.github.io/posts/2023-06-23-agent/", {
         selector: pTagSelector,
@@ -224,7 +226,7 @@ Answer:`;
         prompt: customRagPrompt,
         outputParser: new StringOutputParser(), // output result as string
     });
-    const userQuery = "What is Task Decomposition?";
+    const userQuery = query;
     const context = await retriever.invoke(userQuery);
     const result = await customRagChain.invoke({
         question: userQuery,
