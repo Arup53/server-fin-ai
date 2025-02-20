@@ -311,6 +311,31 @@ Answer:`;
   res.send(result);
 });
 
+app.get("/coins", async (req, res) => {
+  try {
+    const { page, item } = req.query;
+    const response = await axios.get(
+      "https://api.coingecko.com/api/v3/coins/markets",
+      {
+        params: {
+          vs_currency: "usd",
+          order: "market_cap_desc",
+          per_page: item,
+          page,
+        },
+        headers: {
+          accept: "application/json",
+        },
+      }
+    );
+    console.log(response.data);
+    res.json(response.data);
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ error: "Failed to fetch data" });
+  }
+});
+
 // WebSocket Connection
 // const symbols = [
 //   "btcusdt",
