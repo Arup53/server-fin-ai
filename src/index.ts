@@ -30,6 +30,7 @@ import { PromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { createStuffDocumentsChain } from "langchain/chains/combine_documents";
 import { MistralAIEmbeddings } from "@langchain/mistralai";
+import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
 
 const app = express();
 const server = createServer(app);
@@ -310,6 +311,15 @@ Answer:`;
 
   res.send(result);
 });
+
+const pdf = "./pdf/binance-coin-whitepaper.pdf";
+
+async function rag() {
+  const loader = new PDFLoader(pdf);
+  const docs = await loader.load();
+  console.log(docs[2]);
+}
+rag();
 
 app.get("/coins", async (req, res) => {
   try {
