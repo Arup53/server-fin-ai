@@ -245,10 +245,61 @@ Answer:`;
     res.send(result);
 });
 const pdf = "./pdf/binance-coin-whitepaper.pdf";
+// ------------ rag --------------
 async function rag() {
     const loader = new PDFLoader(pdf);
     const docs = await loader.load();
-    console.log(docs[2]);
+    const splitter = new RecursiveCharacterTextSplitter({
+        chunkSize: 500,
+        chunkOverlap: 50,
+    });
+    const allSplits = await splitter.splitDocuments(docs);
+    console.log(allSplits.length);
+    const pinecone = new PineconeClient();
+    const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX);
+    const namespace = "crypto";
+    const stats = await pineconeIndex.describeIndexStats();
+    const namespaces = Object.keys(stats.namespaces || {});
+    const exists = namespaces.includes(namespace);
+    console.log(exists);
+    const vectorStore = await PineconeStore.fromExistingIndex(embeddings, {
+        pineconeIndex,
+        // Maximum number of batch requests to allow at once. Each batch is 1000 vectors.
+        maxConcurrency: 5,
+        // You can pass a namespace here too
+        namespace: namespace,
+    });
+    if (!exists) {
+        await vectorStore.addDocuments(allSplits);
+    }
+    const retriever = vectorStore.asRetriever({
+        k: 5,
+        searchType: "similarity", // number of results
+    });
+    const customTemplate = `Use the following pieces of context to answer the question at the end.
+  If you don't know the answer, just say that you don't know, don't try to make up an answer.
+  Use three sentences maximum and keep the answer as concise as possible.
+  Always say "thanks for asking!" at the end of the answer.
+  
+  {context}
+  
+  Question: {question}
+  
+  Answer:`;
+    const customRagPrompt = PromptTemplate.fromTemplate(customTemplate);
+    const customRagChain = await createStuffDocumentsChain({
+        llm: llm,
+        prompt: customRagPrompt,
+        outputParser: new StringOutputParser(), // output result as string
+    });
+    const query = "What is Revenue Model";
+    const userQuery = query;
+    const context = await retriever.invoke(userQuery);
+    const result = await customRagChain.invoke({
+        question: userQuery,
+        context,
+    });
+    console.log(result);
 }
 rag();
 app.get("/coins", async (req, res) => {
