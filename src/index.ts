@@ -402,6 +402,58 @@ async function rag() {
 }
 rag();
 
+// ----------RAG CHAT ENDPOINT---------
+
+app.get("/ragChat", async (req, res) => {
+  const pinecone = new PineconeClient();
+  const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX!);
+
+  const vectorStore = await PineconeStore.fromExistingIndex(embeddings, {
+    pineconeIndex,
+    // Maximum number of batch requests to allow at once. Each batch is 1000 vectors.
+    maxConcurrency: 5,
+    // You can pass a namespace here too
+    namespace: namespace,
+  });
+
+  const retriever = vectorStore.asRetriever({
+    k: 5,
+    searchType: "similarity", // number of results
+  });
+
+  const customTemplate = `Use the following pieces of context to answer the question at the end.
+  If you don't know the answer, just say that you don't know, don't try to make up an answer.
+ 
+  Always say "thanks for asking!" at the end of the answer.
+  
+  {context}
+  
+  Question: {question}
+  
+  Answer:`;
+
+  const customRagPrompt = PromptTemplate.fromTemplate(customTemplate);
+
+  const customRagChain = await createStuffDocumentsChain({
+    llm: llm,
+    prompt: customRagPrompt,
+    outputParser: new StringOutputParser(), // output result as string
+  });
+
+  const query = "what are crypto exchanges problems:";
+
+  const userQuery = query;
+
+  const context = await retriever.invoke(userQuery);
+
+  const result = await customRagChain.invoke({
+    question: userQuery,
+    context,
+  });
+
+  console.log(result);
+});
+
 app.get("/coins", async (req, res) => {
   try {
     const { page, item } = req.query;
