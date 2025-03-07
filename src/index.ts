@@ -315,7 +315,8 @@ Answer:`;
 const pdf = "./pdf/binance-coin-whitepaper.pdf";
 
 // ------------ rag --------------
-async function rag() {
+const namespace = "crypto";
+async function ragDataIngestion() {
   const loader = new PDFLoader(pdf);
   const docs = await loader.load();
 
@@ -330,14 +331,12 @@ async function rag() {
   const pinecone = new PineconeClient();
   const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX!);
 
-  const namespace = "crypto";
-
   const stats = await pineconeIndex.describeIndexStats();
   const namespaces = Object.keys(stats.namespaces || {});
 
-  const exists = namespaces.includes(namespace);
+  // const exists = namespaces.includes(namespace);
 
-  console.log(exists);
+  // console.log(exists);
 
   const vectorStore = await PineconeStore.fromExistingIndex(embeddings, {
     pineconeIndex,
@@ -347,9 +346,22 @@ async function rag() {
     namespace: namespace,
   });
 
-  if (!exists) {
-    await vectorStore.addDocuments(allSplits);
-  }
+  // if (!exists) {
+  //   await vectorStore.addDocuments(allSplits);
+  // }
+}
+
+async function rag() {
+  const pinecone = new PineconeClient();
+  const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX!);
+
+  const vectorStore = await PineconeStore.fromExistingIndex(embeddings, {
+    pineconeIndex,
+    // Maximum number of batch requests to allow at once. Each batch is 1000 vectors.
+    maxConcurrency: 5,
+    // You can pass a namespace here too
+    namespace: namespace,
+  });
 
   const retriever = vectorStore.asRetriever({
     k: 5,
@@ -358,7 +370,7 @@ async function rag() {
 
   const customTemplate = `Use the following pieces of context to answer the question at the end.
   If you don't know the answer, just say that you don't know, don't try to make up an answer.
-  Use three sentences maximum and keep the answer as concise as possible.
+ 
   Always say "thanks for asking!" at the end of the answer.
   
   {context}
@@ -375,7 +387,7 @@ async function rag() {
     outputParser: new StringOutputParser(), // output result as string
   });
 
-  const query = "What is Revenue Model";
+  const query = "what are crypto exchanges problems:";
 
   const userQuery = query;
 
