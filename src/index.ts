@@ -31,6 +31,7 @@ import { StringOutputParser } from "@langchain/core/output_parsers";
 import { createStuffDocumentsChain } from "langchain/chains/combine_documents";
 import { MistralAIEmbeddings } from "@langchain/mistralai";
 import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
+import { Redis } from "@upstash/redis";
 
 const app = express();
 const server = createServer(app);
@@ -38,6 +39,12 @@ const wss = new WebSocketServer({ server });
 
 app.use(express.json());
 app.use(cors());
+// Initialize Redis Client
+const redis = new Redis({
+  url: process.env.REDIS_URL,
+  token: process.env.REDIS_PASSWORD,
+});
+
 const port = 3000;
 
 const llm = new ChatGroq({
@@ -351,60 +358,60 @@ async function ragDataIngestion() {
   // }
 }
 
-app.post("/ragPdf", async function (req, res) {
-  const query = req.body.query;
-  console.log(query);
-});
+// app.post("/ragPdf", async function (req, res) {
+//   const query = req.body.query;
+//   console.log(query);
+// });
 
-async function rag() {
-  const pinecone = new PineconeClient();
-  const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX!);
+// async function rag() {
+//   const pinecone = new PineconeClient();
+//   const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX!);
 
-  const vectorStore = await PineconeStore.fromExistingIndex(embeddings, {
-    pineconeIndex,
-    // Maximum number of batch requests to allow at once. Each batch is 1000 vectors.
-    maxConcurrency: 5,
-    // You can pass a namespace here too
-    namespace: namespace,
-  });
+//   const vectorStore = await PineconeStore.fromExistingIndex(embeddings, {
+//     pineconeIndex,
+//     // Maximum number of batch requests to allow at once. Each batch is 1000 vectors.
+//     maxConcurrency: 5,
+//     // You can pass a namespace here too
+//     namespace: namespace,
+//   });
 
-  const retriever = vectorStore.asRetriever({
-    k: 5,
-    searchType: "similarity", // number of results
-  });
+//   const retriever = vectorStore.asRetriever({
+//     k: 5,
+//     searchType: "similarity", // number of results
+//   });
 
-  const customTemplate = `Use the following pieces of context to answer the question at the end.
-  If you don't know the answer, just say that you don't know, don't try to make up an answer.
- 
-  Always say "thanks for asking!" at the end of the answer.
-  
-  {context}
-  
-  Question: {question}
-  
-  Answer:`;
+//   const customTemplate = `Use the following pieces of context to answer the question at the end.
+//   If you don't know the answer, just say that you don't know, don't try to make up an answer.
 
-  const customRagPrompt = PromptTemplate.fromTemplate(customTemplate);
+//   Always say "thanks for asking!" at the end of the answer.
 
-  const customRagChain = await createStuffDocumentsChain({
-    llm: llm,
-    prompt: customRagPrompt,
-    outputParser: new StringOutputParser(), // output result as string
-  });
+//   {context}
 
-  const query = "what are crypto exchanges problems:";
+//   Question: {question}
 
-  const userQuery = query;
+//   Answer:`;
 
-  const context = await retriever.invoke(userQuery);
+//   const customRagPrompt = PromptTemplate.fromTemplate(customTemplate);
 
-  const result = await customRagChain.invoke({
-    question: userQuery,
-    context,
-  });
+//   const customRagChain = await createStuffDocumentsChain({
+//     llm: llm,
+//     prompt: customRagPrompt,
+//     outputParser: new StringOutputParser(), // output result as string
+//   });
 
-  console.log(result);
-}
+//   const query = "what are crypto exchanges problems:";
+
+//   const userQuery = query;
+
+//   const context = await retriever.invoke(userQuery);
+
+//   const result = await customRagChain.invoke({
+//     question: userQuery,
+//     context,
+//   });
+
+//   console.log(result);
+// }
 
 // ----------RAG CHAT ENDPOINT---------
 
@@ -461,30 +468,113 @@ app.post("/ragChat", async (req, res) => {
   res.send(result);
 });
 
-app.get("/coins", async (req, res) => {
+// -------------- REDIS CACHED API FOR PAGINATION-------------
+// @ts-ignore
+const COINS_CACHE_KEY = "all-coins"; // Key for storing full data
+const CACHE_EXPIRATION = 600; // Cache expiration in seconds (10 minutes)
+
+// Function to fetch and cache full CoinGecko data
+const fetchAndCacheCoins = async () => {
   try {
-    const { page, item } = req.query;
+    console.log("Fetching full CoinGecko data...");
     const response = await axios.get(
       "https://api.coingecko.com/api/v3/coins/markets",
       {
         params: {
           vs_currency: "usd",
           order: "market_cap_desc",
-          per_page: item,
-          page,
+          per_page: 250, // Max items per request
+          page: 1, // Start from page 1
         },
         headers: {
           accept: "application/json",
         },
       }
     );
-    console.log(response.data);
-    res.json(response.data);
+
+    let allCoins = response.data;
+
+    // Fetch additional pages if needed
+    for (let i = 2; i <= 4; i++) {
+      const additionalData = await axios.get(
+        "https://api.coingecko.com/api/v3/coins/markets",
+        {
+          params: {
+            vs_currency: "usd",
+            order: "market_cap_desc",
+            per_page: 250, // Max items per request
+            page: i, // Next page
+          },
+          headers: {
+            accept: "application/json",
+          },
+        }
+      );
+      allCoins = [...allCoins, ...additionalData.data];
+    }
+
+    // Store full dataset in Redis
+    await redis.set(COINS_CACHE_KEY, JSON.stringify(allCoins), {
+      ex: CACHE_EXPIRATION,
+    });
+
+    console.log("Coin data cached successfully!");
   } catch (error) {
-    console.log(error);
+    console.error("Error fetching CoinGecko data:", error);
+  }
+};
+
+// Route to serve paginated coins from cache
+app.get("/coins", async (req, res) => {
+  try {
+    const { page = 1, item = 10 } = req.query;
+    // @ts-ignore
+    const pageNumber = parseInt(page, 10);
+    // @ts-ignore
+    const itemsPerPage = parseInt(item, 10);
+
+    // Check if full data exists in cache
+    let cachedData = await redis.get(COINS_CACHE_KEY);
+    if (!cachedData) {
+      console.log("Cache empty, fetching fresh data...");
+      await fetchAndCacheCoins();
+      cachedData = await redis.get(COINS_CACHE_KEY);
+    }
+
+    // Parse data
+    // @ts-ignore
+    let allCoins;
+    try {
+      allCoins =
+        typeof cachedData === "string" ? JSON.parse(cachedData) : cachedData;
+    } catch (error) {
+      console.error("Error parsing JSON from Redis:", error);
+      allCoins = []; // Fallback if parsing fails
+    }
+
+    // Paginate data
+    const startIndex = (pageNumber - 1) * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    const paginatedData = allCoins.slice(startIndex, endIndex);
+
+    res.json({
+      // totalItems: allCoins.length,
+      // totalPages: Math.ceil(allCoins.length / itemsPerPage),
+      // currentPage: pageNumber,
+      // perPage: itemsPerPage,
+      coins: paginatedData,
+    });
+  } catch (error) {
+    console.error("Error fetching paginated data:", error);
     res.status(500).json({ error: "Failed to fetch data" });
   }
 });
+
+// Fetch and cache data on server start
+fetchAndCacheCoins();
+
+// Refresh cache every 10 minutes
+setInterval(fetchAndCacheCoins, CACHE_EXPIRATION * 1000);
 
 // WebSocket Connection
 // const symbols = [
