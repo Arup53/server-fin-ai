@@ -351,6 +351,11 @@ async function ragDataIngestion() {
   // }
 }
 
+app.post("/ragPdf", async function (req, res) {
+  const query = req.body.query;
+  console.log(query);
+});
+
 async function rag() {
   const pinecone = new PineconeClient();
   const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX!);
@@ -400,11 +405,12 @@ async function rag() {
 
   console.log(result);
 }
-rag();
 
 // ----------RAG CHAT ENDPOINT---------
 
-app.get("/ragChat", async (req, res) => {
+app.post("/ragChat", async (req, res) => {
+  const query = req.body.query;
+  console.log(query);
   const pinecone = new PineconeClient();
   const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX!);
 
@@ -440,7 +446,7 @@ app.get("/ragChat", async (req, res) => {
     outputParser: new StringOutputParser(), // output result as string
   });
 
-  const query = "what are crypto exchanges problems:";
+  // const query = "what are crypto exchanges problems:";
 
   const userQuery = query;
 
@@ -452,6 +458,7 @@ app.get("/ragChat", async (req, res) => {
   });
 
   console.log(result);
+  res.send(result);
 });
 
 app.get("/coins", async (req, res) => {
