@@ -448,12 +448,12 @@ app.post("/ragChat", async (req, res) => {
 
   // const query = "what are crypto exchanges problems:";
 
-  const userQuery = query;
+  // const userQuery = query;
 
-  const context = await retriever.invoke(userQuery);
+  const context = await retriever.invoke(query);
 
   const result = await customRagChain.invoke({
-    question: userQuery,
+    question: query,
     context,
   });
 
