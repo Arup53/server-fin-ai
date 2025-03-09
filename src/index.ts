@@ -18,7 +18,7 @@ import {
   DynamicTool,
 } from "@langchain/core/tools";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
-import { z } from "zod";
+import { promise, z } from "zod";
 import RSI from "calc-rsi";
 import axios from "axios";
 import "cheerio";
@@ -32,10 +32,13 @@ import { createStuffDocumentsChain } from "langchain/chains/combine_documents";
 import { MistralAIEmbeddings } from "@langchain/mistralai";
 import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
 import { Redis } from "@upstash/redis";
+import { PrismaClient } from "@prisma/client";
 
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
+
+const prisma = new PrismaClient();
 
 app.use(express.json());
 app.use(cors());
@@ -575,6 +578,107 @@ fetchAndCacheCoins();
 
 // Refresh cache every 10 minutes
 setInterval(fetchAndCacheCoins, CACHE_EXPIRATION * 1000);
+
+// ------------------Trending & Market cap  api -----------------
+
+interface PriceChangePercentage {
+  [key: string]: number;
+}
+
+interface CoinData {
+  price_change_percentage_24h: PriceChangePercentage;
+}
+
+interface CoinItem {
+  id: string;
+  coin_id: number;
+  name: string;
+  symbol: string;
+  market_cap_rank?: number;
+  thumb: string;
+  small: string;
+  large: string;
+  slug: string;
+  price_btc: number;
+  score: number;
+  data: CoinData; // Now explicitly typed
+}
+
+interface TrendingCoin {
+  item: CoinItem;
+}
+
+interface TrendingCoinsResponse {
+  coins: TrendingCoin[];
+}
+
+async function fetchCoinAndMarketCap() {
+  const resCoin = await axios.get<TrendingCoinsResponse>(
+    "https://api.coingecko.com/api/v3/search/trending",
+    {
+      headers: {
+        "Content-Type": "application/json",
+      },
+    }
+  );
+
+  const newArr: TrendingCoin[] = resCoin.data.coins.slice(0, 3);
+
+  const resMarket = await axios.get("https://api.coingecko.com/api/v3/global");
+  const obj = {
+    marketCap: resMarket.data.data.total_market_cap.usd,
+    change: resMarket.data.data.market_cap_change_percentage_24h_usd,
+  };
+
+  console.log(obj);
+  await insertCoinAndMarketInfo(newArr, obj);
+}
+
+async function insertCoinAndMarketInfo(
+  coinArr: TrendingCoin[],
+  marketObj: any
+) {
+  return await prisma.$transaction(async (tx) => {
+    await tx.trending.deleteMany();
+    await tx.marketCap.deleteMany();
+
+    const coinInsert = await Promise.all(
+      coinArr.map((coin: TrendingCoin) =>
+        tx.trending.create({
+          data: {
+            name: coin.item.name,
+            image: coin.item.small,
+            change: coin.item.data.price_change_percentage_24h.usd,
+          },
+        })
+      )
+    );
+
+    const marketCapInsert = await tx.marketCap.create({
+      data: {
+        capital: marketObj.marketCap,
+        change: marketObj.change,
+      },
+    });
+    return { coinInsert, marketCapInsert };
+  });
+}
+
+setInterval(fetchCoinAndMarketCap, 30 * 60 * 1000);
+
+app.get("/marketStats", async (req, res) => {
+  try {
+    const [trendingData, marketCapData] = await Promise.all([
+      prisma.trending.findMany(),
+      prisma.marketCap.findMany(),
+    ]);
+    console.log(trendingData, marketCapData);
+    res.json({ trending: trendingData, marketCap: marketCapData });
+  } catch (error) {
+    console.error("Error fetching market stats:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
 
 // WebSocket Connection
 // const symbols = [
